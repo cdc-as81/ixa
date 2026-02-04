@@ -30,8 +30,19 @@ jobs:
       - name: Run hyperfine benchmarks
         run: mise run bench:hyperfine -- -- --export-markdown hyperfine.md
 
-      - name: Run benchmarks on head branch and format output
+      - name: Run criterion benchmarks (baseline compare)
         run: |
+          set -euo pipefail
+          if cargo bench -p ixa-bench -- --baseline base 2>&1 | tee criterion-compare.txt; then
+            cargo run -q -p ixa-bench --bin check_criterion_regressions | tee criterion-regressions.txt
+          else
+            echo "Note: A comparison could not be generated. Maybe you added new benchmarks?" | tee criterion-regressions.txt
+            mise run bench:criterion 2>&1 | tee -a criterion-compare.txt
+          fi
+
+      - name: Format PR comment
+        run: |
+          set -euo pipefail
           echo '### Benchmark Results' > results.md
           echo '' >> results.md
           echo '#### Hyperfine' >> results.md
@@ -42,14 +53,9 @@ jobs:
           echo '' >> results.md
           echo '#### Criterion' >> results.md
           echo '' >> results.md
-          if ! cargo bench -p ixa-bench -- --baseline base 2>&1; then
-            echo "Note: A comparison could not be generated. Maybe you added new benchmarks?" >> results.md
-            mise run bench:criterion 2>&1
-          else
-            echo '```' >> results.md
-            cargo run -q -p ixa-bench --bin check_criterion_regressions >> results.md
-            echo '```' >> results.md
-          fi
+          echo '```' >> results.md
+          cat criterion-regressions.txt >> results.md
+          echo '```' >> results.md
 
       - name: Add comment to PR
         run: |
@@ -58,3 +64,100 @@ jobs:
             --body-file results.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create JSON results artifact (current)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+
+          function parseDurationToSeconds(text) {
+            // Examples: "12.3 ms ± 0.2 ms", "1.234 s", "456 µs"
+            const m = String(text).trim().match(/([0-9]*\.?[0-9]+)\s*([a-zA-Zµμ]+)/);
+            if (!m) return null;
+            const value = Number(m[1]);
+            const unitRaw = m[2];
+            const unit = unitRaw.replace('μ', 'µ');
+            const factor = {
+              s: 1,
+              sec: 1,
+              ms: 1e-3,
+              us: 1e-6,
+              'µs': 1e-6,
+              ns: 1e-9,
+            }[unit] ?? null;
+            if (!Number.isFinite(value) || factor == null) return null;
+            return value * factor;
+          }
+
+          function parseHyperfineMarkdown(md) {
+            const lines = md.split(/\r?\n/);
+            const rows = [];
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('|')) continue;
+              if (trimmed.includes('Command') && trimmed.includes('Mean')) continue;
+              if (/^\|[-\s|]+\|$/.test(trimmed)) continue;
+              const parts = trimmed.split('|').map(s => s.trim()).filter(Boolean);
+              if (parts.length < 2) continue;
+              const name = parts[0];
+              const meanText = parts[1];
+              const meanSec = parseDurationToSeconds(meanText);
+              if (meanSec == null) continue;
+              rows.push({ name, mean_sec: meanSec, mean: meanText });
+            }
+            return rows;
+          }
+
+          const hyperfineMd = fs.readFileSync('hyperfine.md', 'utf8');
+          const criterionRegressions = fs.existsSync('criterion-regressions.txt')
+            ? fs.readFileSync('criterion-regressions.txt', 'utf8')
+            : '';
+          const criterionCompareLog = fs.existsSync('criterion-compare.txt')
+            ? fs.readFileSync('criterion-compare.txt', 'utf8')
+            : '';
+
+          const headSha = process.env.HEAD_SHA || process.env.GITHUB_SHA;
+          const repo = process.env.GITHUB_REPOSITORY;
+          const payload = {
+            generated_at: new Date().toISOString(),
+            repository: repo,
+            pr_number: Number(process.env.PR_NUMBER || '0') || undefined,
+            base: {
+              ref: process.env.BASE_REF,
+              sha: process.env.BASE_SHA,
+            },
+            head: {
+              ref: process.env.HEAD_REF,
+              sha: headSha,
+              url: repo && headSha ? `https://github.com/${repo}/commit/${headSha}` : undefined,
+            },
+            hyperfine: {
+              markdown: hyperfineMd,
+              results: parseHyperfineMarkdown(hyperfineMd),
+            },
+            criterion: {
+              regressions_text: criterionRegressions,
+              compare_log: criterionCompareLog,
+            },
+          };
+
+          fs.writeFileSync('bench-current.json', JSON.stringify(payload, null, 2));
+          NODE
+
+      - name: Upload JSON results artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-current
+          path: |
+            bench-current.json
+            results.md
+            hyperfine.md
+            criterion-regressions.txt
+            criterion-compare.txt

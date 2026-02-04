@@ -1,0 +1,99 @@
+name: Publish Bench JSON to gh-pages
+
+on:
+  workflow_run:
+    workflows: ["Benchmark Pull Requests"]
+    types: [completed]
+
+concurrency:
+  group: gh-pages-bench-publish
+  cancel-in-progress: false
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download benchmark artifact
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          name: bench-current
+          path: ./artifact
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v6
+        with:
+          ref: gh-pages
+
+      - name: Update benchmark JSON file
+        run: |
+          set -euo pipefail
+          mkdir -p dev/bench
+          node <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+
+          const incomingPath = path.join('artifact', 'bench-current.json');
+          const destPath = path.join('dev', 'bench', 'pr-benchmarks.json');
+
+          const incoming = JSON.parse(fs.readFileSync(incomingPath, 'utf8'));
+          const headSha = incoming?.head?.sha;
+          const prNumber = incoming?.pr_number;
+
+          let existingRaw = null;
+          let existingWasArray = false;
+          let items = [];
+          if (fs.existsSync(destPath)) {
+            try {
+              existingRaw = JSON.parse(fs.readFileSync(destPath, 'utf8'));
+            } catch {
+              existingRaw = null;
+            }
+          }
+
+          if (Array.isArray(existingRaw)) {
+            existingWasArray = true;
+            items = existingRaw;
+          } else if (existingRaw && typeof existingRaw === 'object') {
+            if (Array.isArray(existingRaw.items)) items = existingRaw.items;
+            else if (Array.isArray(existingRaw.entries)) items = existingRaw.entries;
+            else items = [];
+          }
+
+          const isSameEntry = (e) => e && e.head && e.head.sha === headSha && e.pr_number === prNumber;
+          const filtered = items.filter((e) => !isSameEntry(e));
+          filtered.push(incoming);
+
+          // Keep file from growing without bound: keep newest 200 entries
+          const trimmed = filtered.slice(-200);
+
+          if (existingWasArray) {
+            fs.writeFileSync(destPath, JSON.stringify(trimmed, null, 2));
+          } else {
+            const out = (existingRaw && typeof existingRaw === 'object' && !Array.isArray(existingRaw))
+              ? { ...existingRaw }
+              : { version: 1 };
+            out.last_update = new Date().toISOString();
+            out.items = trimmed;
+            fs.writeFileSync(destPath, JSON.stringify(out, null, 2));
+          }
+          console.log(`Updated ${destPath} with sha=${headSha} pr=${prNumber}`);
+          NODE
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          if git diff --quiet; then
+            echo "No changes to publish"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add dev/bench/pr-benchmarks.json
+          git commit -m "bench: update PR benchmarks"
+          git push origin gh-pages
