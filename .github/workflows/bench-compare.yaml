@@ -59,6 +59,7 @@ jobs:
           echo '```' >> results.md
 
       - name: Add comment to PR
+        if: ${{ github.event_name == 'pull_request' }}
         run: |
           gh pr comment ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
