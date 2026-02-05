@@ -20,9 +20,22 @@ jobs:
     #      github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
+      - name: Debug list run artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          echo "Listing artifacts for $REPO run_id=$RUN_ID"
+          gh api "/repos/$REPO/actions/runs/$RUN_ID/artifacts" \
+            --jq '.artifacts[] | {name, expired, size_in_bytes, updated_at}'
+
       - name: Download benchmark artifact
         uses: actions/download-artifact@v4
         with:
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
           run-id: ${{ github.event.workflow_run.id }}
           name: bench-current
           path: ./artifact
