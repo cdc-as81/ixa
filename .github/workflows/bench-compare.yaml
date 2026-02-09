@@ -9,7 +9,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       actions: write
-      contents: read
+      contents: write
       pull-requests: write
     steps:
       - uses: actions/checkout@v6
@@ -31,7 +31,7 @@ jobs:
         run: git checkout ${{ github.event.pull_request.head.ref }}
 
       - name: Run hyperfine benchmarks
-        run: mise run bench:hyperfine -- -- --export-markdown hyperfine.md
+        run: mise run bench:hyperfine -- -- --export-markdown hyperfine.md --export-json hyperfine.json
 
       - name: Run criterion benchmarks (baseline compare)
         run: |
@@ -69,93 +69,46 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create JSON results artifact (current)
+      - name: Download previous bench history from gh-pages (best effort)
         env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          node <<'NODE'
-          const fs = require('fs');
+          # Fetches raw JSON directly from the gh-pages branch (no zip).
+          # If it doesn't exist yet, we continue with an empty history.
+          if gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/contents/bench-history.json?ref=gh-pages" \
+            --jq '.content' > bench-history.b64 2>/dev/null; then
+            base64 -d bench-history.b64 > bench-history.json
+            echo "Downloaded bench-history.json from gh-pages"
+          else
+            echo "No bench-history.json found on gh-pages (first run?)."
+          fi
 
-          function parseDurationToSeconds(text) {
-            // Examples: "12.3 ms ± 0.2 ms", "1.234 s", "456 µs"
-            const m = String(text).trim().match(/([0-9]*\.?[0-9]+)\s*([a-zA-Zµμ]+)/);
-            if (!m) return null;
-            const value = Number(m[1]);
-            const unitRaw = m[2];
-            const unit = unitRaw.replace('μ', 'µ');
-            const factor = {
-              s: 1,
-              sec: 1,
-              ms: 1e-3,
-              us: 1e-6,
-              'µs': 1e-6,
-              ns: 1e-9,
-            }[unit] ?? null;
-            if (!Number.isFinite(value) || factor == null) return null;
-            return value * factor;
-          }
+      - name: Create JSON results artifacts (current + history)
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/bench_results.js \
+            --repo "${GITHUB_REPOSITORY}" \
+            --branch "${RUN_BRANCH}" \
+            --pr-number "${PR_NUMBER}" \
+            --base-ref "${BASE_REF}" --base-sha "${BASE_SHA}" \
+            --head-ref "${HEAD_REF}" --head-sha "${HEAD_SHA}" \
+            --hyperfine-json hyperfine.json \
+            --criterion-log criterion-compare.txt \
+            --history-in bench-history.json \
+            --out-current bench-current.json \
+            --history-out bench-history.json
 
-          function parseHyperfineMarkdown(md) {
-            const lines = md.split(/\r?\n/);
-            const rows = [];
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith('|')) continue;
-              if (trimmed.includes('Command') && trimmed.includes('Mean')) continue;
-              if (/^\|[-\s|]+\|$/.test(trimmed)) continue;
-              const parts = trimmed.split('|').map(s => s.trim()).filter(Boolean);
-              if (parts.length < 2) continue;
-              const name = parts[0];
-              const meanText = parts[1];
-              const meanSec = parseDurationToSeconds(meanText);
-              if (meanSec == null) continue;
-              rows.push({ name, mean_sec: meanSec, mean: meanText });
-            }
-            return rows;
-          }
-
-          const hyperfineMd = fs.readFileSync('hyperfine.md', 'utf8');
-          const criterionRegressions = fs.existsSync('criterion-regressions.txt')
-            ? fs.readFileSync('criterion-regressions.txt', 'utf8')
-            : '';
-          const criterionCompareLog = fs.existsSync('criterion-compare.txt')
-            ? fs.readFileSync('criterion-compare.txt', 'utf8')
-            : '';
-
-          const headSha = process.env.HEAD_SHA || process.env.GITHUB_SHA;
-          const repo = process.env.GITHUB_REPOSITORY;
-          const payload = {
-            generated_at: new Date().toISOString(),
-            repository: repo,
-            pr_number: Number(process.env.PR_NUMBER || '0') || undefined,
-            base: {
-              ref: process.env.BASE_REF,
-              sha: process.env.BASE_SHA,
-            },
-            head: {
-              ref: process.env.HEAD_REF,
-              sha: headSha,
-              url: repo && headSha ? `https://github.com/${repo}/commit/${headSha}` : undefined,
-            },
-            hyperfine: {
-              markdown: hyperfineMd,
-              results: parseHyperfineMarkdown(hyperfineMd),
-            },
-            criterion: {
-              regressions_text: criterionRegressions,
-              compare_log: criterionCompareLog,
-            },
-          };
-
-          fs.writeFileSync('bench-current.json', JSON.stringify(payload, null, 2));
-          NODE
-
-      - name: Print JSON results (bench-current.json)
+      - name: Print JSON results (bench-current.json + bench-history.json)
         run: |
           set -euo pipefail
           echo "bench-current.json (bytes): $(wc -c < bench-current.json)"
@@ -163,6 +116,10 @@ jobs:
           # Pretty-print for readability in logs; falls back to raw if python isn't present.
           (python3 -m json.tool bench-current.json) || cat bench-current.json
           echo "--- end bench-current.json ---"
+          echo "bench-history.json (bytes): $(wc -c < bench-history.json)"
+          echo "--- bench-history.json ---"
+          (python3 -m json.tool bench-history.json) || cat bench-history.json
+          echo "--- end bench-history.json ---"
 
       - name: Upload JSON results artifact
         uses: actions/upload-artifact@v4
@@ -171,7 +128,38 @@ jobs:
           if-no-files-found: error
           path: |
             bench-current.json
+            bench-history.json
             results.md
             hyperfine.md
+            hyperfine.json
             criterion-regressions.txt
             criterion-compare.txt
+
+      - name: Upload bench history artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-history
+          if-no-files-found: error
+          path: |
+            bench-history.json
+
+      - name: Publish bench-history.json to gh-pages
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rm -rf gh-pages
+          git clone --depth 1 --branch gh-pages "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          cp bench-history.json gh-pages/bench-history.json
+          pushd gh-pages >/dev/null
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "No changes to bench-history.json"
+            exit 0
+          fi
+          git add bench-history.json
+          git commit -m "Update bench-history.json"
+          git push
+          popd >/dev/null
