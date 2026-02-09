@@ -1,7 +1,7 @@
 # ixa
 
 Ixa (Interactive eXecution of ABMs) is a framework for building modular
-agent-based models in Rust.
+agent-based models in Rust. test1
 
 <img align="left" alt="ixa crab" src="website/ixa_logo.svg" width="200px" />
 
