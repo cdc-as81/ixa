@@ -141,6 +141,11 @@
           </select>
         </label>
 
+        <label class="checkbox" title="Render a separate time-series chart for every benchmark in the selected suite">
+          <input id="showAll" type="checkbox" />
+          Show all benchmarks
+        </label>
+
         <label>
           Benchmark
           <select id="benchmark"></select>
@@ -162,13 +167,33 @@
       <div class="grid">
         <section class="card">
           <h2>Time series</h2>
-          <div class="canvasWrap"><canvas id="ts"></canvas></div>
+          <div class="canvasWrap" id="tsSingleWrap"><canvas id="ts"></canvas></div>
+          <div id="tsAllWrap" hidden></div>
           <div class="hint" id="tsHint"></div>
         </section>
 
         <section class="card">
           <h2>Latest vs previous (percent change)</h2>
-          <div class="canvasWrap"><canvas id="delta"></canvas></div>
+          <div class="row" style="margin-top: 6px; margin-bottom: 10px">
+            <label>
+              Baseline run (x)
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+                <button id="basePrev" type="button" title="Older">←</button>
+                <select id="baseRun" style="min-width: 260px; max-width: 520px"></select>
+                <button id="baseNext" type="button" title="Newer">→</button>
+              </div>
+            </label>
+
+            <label>
+              Compare run (y)
+              <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap">
+                <button id="cmpPrev" type="button" title="Older">←</button>
+                <select id="cmpRun" style="min-width: 260px; max-width: 520px"></select>
+                <button id="cmpNext" type="button" title="Newer">→</button>
+              </div>
+            </label>
+          </div>
+          <div class="canvasWrap" id="deltaWrap"><canvas id="delta"></canvas></div>
           <div class="hint" id="deltaHint"></div>
         </section>
       </div>
@@ -188,6 +213,8 @@
 
       /** @type {Chart | null} */
       let tsChart = null;
+      /** @type {Chart[]} */
+      let tsCharts = [];
       /** @type {Chart | null} */
       let deltaChart = null;
 
@@ -237,6 +264,8 @@
           tsChart.destroy();
           tsChart = null;
         }
+        for (const c of tsCharts) c.destroy();
+        tsCharts = [];
         if (deltaChart) {
           deltaChart.destroy();
           deltaChart = null;
@@ -352,14 +381,15 @@
         return benchmarks[0];
       }
 
-      function renderTimeSeries({ suiteRuns, suite, benchmarkName, metric, showBand }) {
-        if (typeof Chart === "undefined") {
-          throw new Error(
-            "Chart.js failed to load (Chart is undefined). Check network access or CDN availability."
-          );
-        }
-
-        const labels = makeLabels(suiteRuns);
+      function renderSingleTimeSeriesChart({
+        canvas,
+        labels,
+        suiteRuns,
+        suite,
+        benchmarkName,
+        metric,
+        showBand,
+      }) {
         const allPoints = [];
         const lowerBand = [];
         const upperBand = [];
@@ -379,9 +409,7 @@
           ? bestUnit(vals.slice().sort((a, b) => a - b)[Math.floor(vals.length / 2)])
           : { scale: 1, unit: "s" };
 
-        const ctx = $("ts");
         const datasets = [];
-
         if (showBand) {
           datasets.push({
             label: "lower",
@@ -416,8 +444,7 @@
           spanGaps: true,
         });
 
-        if (tsChart) tsChart.destroy();
-        tsChart = new Chart(ctx, {
+        return new Chart(canvas, {
           type: "line",
           data: { labels, datasets },
           options: {
@@ -456,16 +483,98 @@
             },
           },
         });
+      }
+
+      function renderTimeSeries({ suiteRuns, suite, benchmarkName, metric, showBand }) {
+        if (typeof Chart === "undefined") {
+          throw new Error(
+            "Chart.js failed to load (Chart is undefined). Check network access or CDN availability."
+          );
+        }
+
+        // Clear any previous multi-chart state
+        if (tsChart) {
+          tsChart.destroy();
+          tsChart = null;
+        }
+        for (const c of tsCharts) c.destroy();
+        tsCharts = [];
+
+        const showAll = $("showAll").checked;
+        const labels = makeLabels(suiteRuns);
+
+        $("tsSingleWrap").hidden = showAll;
+        $("tsAllWrap").hidden = !showAll;
+
+        if (!showAll) {
+          const ctx = $("ts");
+          tsChart = renderSingleTimeSeriesChart({
+            canvas: ctx,
+            labels,
+            suiteRuns,
+            suite,
+            benchmarkName,
+            metric,
+            showBand,
+          });
+        } else {
+          const allWrap = $("tsAllWrap");
+          allWrap.innerHTML = "";
+
+          const benchmarks = listBenchmarks(suiteRuns);
+          // Simple, scrollable list of charts. (Can be heavy if you have lots of benches.)
+          const grid = document.createElement("div");
+          grid.style.display = "grid";
+          grid.style.gridTemplateColumns = "1fr";
+          grid.style.gap = "12px";
+          allWrap.appendChild(grid);
+
+          for (const name of benchmarks) {
+            const block = document.createElement("div");
+            block.style.border = "1px solid rgba(127, 127, 127, 0.25)";
+            block.style.borderRadius = "12px";
+            block.style.padding = "10px";
+
+            const title = document.createElement("div");
+            title.textContent = name;
+            title.style.fontSize = "12px";
+            title.style.opacity = "0.9";
+            title.style.fontWeight = "650";
+            title.style.marginBottom = "8px";
+            block.appendChild(title);
+
+            const wrap = document.createElement("div");
+            wrap.style.position = "relative";
+            wrap.style.height = "220px";
+            block.appendChild(wrap);
+
+            const canvas = document.createElement("canvas");
+            wrap.appendChild(canvas);
+            grid.appendChild(block);
+
+            const chart = renderSingleTimeSeriesChart({
+              canvas,
+              labels,
+              suiteRuns,
+              suite,
+              benchmarkName: name,
+              metric,
+              showBand,
+            });
+            tsCharts.push(chart);
+          }
+        }
 
         const lastIdx = suiteRuns.length - 1;
         const last = lastIdx >= 0 ? suiteRuns[lastIdx] : null;
         const hintParts = [];
         if (suiteRuns.length) hintParts.push(`${suiteRuns.length} run(s)`);
         if (last?.head?.sha) hintParts.push(`latest head: ${safeSha(last.head.sha)}`);
+        if (showAll) hintParts.push("showing all benchmarks");
         $("tsHint").textContent = hintParts.join(" · ");
       }
 
-      function renderLatestDelta({ suiteRuns, suite, metric }) {
+      function renderLatestDelta({ suiteRuns, suite, metric, baseIdx, cmpIdx }) {
         if (typeof Chart === "undefined") {
           throw new Error(
             "Chart.js failed to load (Chart is undefined). Check network access or CDN availability."
@@ -481,8 +590,21 @@
           return;
         }
 
-        const prev = suiteRuns[suiteRuns.length - 2];
-        const next = suiteRuns[suiteRuns.length - 1];
+        const hi = suiteRuns.length - 1;
+        const bi = clampInt(baseIdx, 0, hi);
+        const ci = clampInt(cmpIdx, 0, hi);
+
+        if (bi === ci) {
+          if (deltaChart) {
+            deltaChart.destroy();
+            deltaChart = null;
+          }
+          $("deltaHint").textContent = "Pick two different runs to compare.";
+          return;
+        }
+
+        const prev = suiteRuns[bi];
+        const next = suiteRuns[ci];
         const prevMap = indexByName(prev.entries);
         const nextMap = indexByName(next.entries);
 
@@ -503,6 +625,11 @@
         const MAX = 25;
         const trimmed = changes.slice(0, MAX);
 
+        // Make the chart height scale with bar count (helps readability)
+        const deltaWrap = $("deltaWrap");
+        const desired = 90 + trimmed.length * 18;
+        deltaWrap.style.height = `${Math.max(320, Math.min(900, desired))}px`;
+
         const labels = trimmed.map((c) => c.name);
         const data = trimmed.map((c) => c.pct);
 
@@ -514,7 +641,7 @@
             labels,
             datasets: [
               {
-                label: "% change (latest vs previous)",
+                label: "% change (y vs x)",
                 data,
                 backgroundColor: data.map((v) =>
                   v >= 0 ? "rgba(220, 70, 70, 0.65)" : "rgba(70, 180, 120, 0.65)"
@@ -529,26 +656,35 @@
           options: {
             responsive: true,
             maintainAspectRatio: false,
+            indexAxis: "y",
             plugins: {
               legend: { display: false },
               tooltip: {
                 callbacks: {
-                  label: (item) => `${item.parsed.y.toFixed(2)}%`,
+                  title: (items) => {
+                    const i = items?.[0];
+                    return i ? String(i.label) : "";
+                  },
+                  label: (item) => {
+                    const v = item.parsed.x;
+                    return `${Number(v).toFixed(2)}%`;
+                  },
                 },
               },
             },
             scales: {
-              y: {
-                title: { display: true, text: "% change (time; lower is better)" },
-                ticks: {
-                  callback: (v) => `${v}%`,
-                },
-              },
               x: {
+                title: { display: true, text: "% change (time; lower is better)" },
+                ticks: { callback: (v) => `${v}%` },
+              },
+              y: {
                 ticks: {
                   autoSkip: false,
-                  maxRotation: 80,
-                  minRotation: 40,
+                  callback: (_v, idx) => {
+                    const s = labels[idx] ?? "";
+                    const max = 42;
+                    return s.length > max ? s.slice(0, max - 1) + "…" : s;
+                  },
                 },
               },
             },
@@ -559,7 +695,7 @@
         const nextSha = safeSha(next?.head?.sha);
         $("deltaHint").textContent =
           `Comparing ${formatDate(prev.run_at)} (${prevSha}) → ${formatDate(next.run_at)} (${nextSha}). ` +
-          `Showing top ${Math.min(MAX, changes.length)} regressions by %.`;
+          `Showing up to ${Math.min(MAX, changes.length)} benchmarks (full names in tooltip).`;
       }
 
       function populateSelect(selectEl, options, value) {
@@ -571,6 +707,12 @@
           selectEl.appendChild(o);
         }
         if (value) selectEl.value = value;
+      }
+
+      function clampInt(n, lo, hi) {
+        const x = Number(n);
+        if (!Number.isFinite(x)) return lo;
+        return Math.min(hi, Math.max(lo, Math.trunc(x)));
       }
 
       async function fetchHistory() {
@@ -601,9 +743,17 @@
         updateMeta(history);
 
         const suiteEl = $("suite");
+        const showAllEl = $("showAll");
         const benchEl = $("benchmark");
         const metricEl = $("metric");
         const showBandEl = $("showBand");
+
+        const baseRunEl = $("baseRun");
+        const cmpRunEl = $("cmpRun");
+        const basePrevEl = $("basePrev");
+        const baseNextEl = $("baseNext");
+        const cmpPrevEl = $("cmpPrev");
+        const cmpNextEl = $("cmpNext");
 
         function rerender() {
           const suite = suiteEl.value;
@@ -612,8 +762,16 @@
           const metric = metricEl.value;
           const showBand = showBandEl.checked;
 
+          benchEl.disabled = showAllEl.checked;
+
           renderTimeSeries({ suiteRuns, suite, benchmarkName: bench, metric, showBand });
-          renderLatestDelta({ suiteRuns, suite, metric });
+          renderLatestDelta({
+            suiteRuns,
+            suite,
+            metric,
+            baseIdx: baseRunEl.value,
+            cmpIdx: cmpRunEl.value,
+          });
         }
 
         function onSuiteChange() {
@@ -632,13 +790,60 @@
           const defaultMetric = suite === "criterion" ? "estimate" : "mean_sec";
           populateSelect(metricEl, metrics, defaultMetric);
 
+          // Delta chart run pickers
+          const runLabels = makeLabels(suiteRuns);
+          const runOptions = runLabels.map((label, idx) => ({
+            value: String(idx),
+            label,
+          }));
+
+          const n = suiteRuns.length;
+          const defaultBase = String(Math.max(0, n - 2));
+          const defaultCmp = String(Math.max(0, n - 1));
+
+          const prevBase = baseRunEl.value;
+          const prevCmp = cmpRunEl.value;
+          const baseVal = prevBase !== "" && Number(prevBase) < n ? prevBase : defaultBase;
+          const cmpVal = prevCmp !== "" && Number(prevCmp) < n ? prevCmp : defaultCmp;
+
+          populateSelect(baseRunEl, runOptions, baseVal);
+          populateSelect(cmpRunEl, runOptions, cmpVal);
+
+          rerender();
+        }
+
+        function stepRun(selectEl, delta) {
+          const suite = suiteEl.value;
+          const suiteRuns = getSuiteRuns(history, suite);
+          const hi = suiteRuns.length - 1;
+          if (hi < 0) return;
+
+          const otherEl = selectEl === baseRunEl ? cmpRunEl : baseRunEl;
+          let idx = clampInt(selectEl.value, 0, hi) + delta;
+          idx = clampInt(idx, 0, hi);
+
+          const other = clampInt(otherEl.value, 0, hi);
+          if (idx === other) {
+            idx = clampInt(idx + (delta >= 0 ? 1 : -1), 0, hi);
+            if (idx === other) return;
+          }
+
+          selectEl.value = String(idx);
           rerender();
         }
 
         suiteEl.addEventListener("change", onSuiteChange);
+        showAllEl.addEventListener("change", rerender);
         benchEl.addEventListener("change", rerender);
         metricEl.addEventListener("change", rerender);
         showBandEl.addEventListener("change", rerender);
+
+        baseRunEl.addEventListener("change", rerender);
+        cmpRunEl.addEventListener("change", rerender);
+        basePrevEl.addEventListener("click", () => stepRun(baseRunEl, -1));
+        baseNextEl.addEventListener("click", () => stepRun(baseRunEl, +1));
+        cmpPrevEl.addEventListener("click", () => stepRun(cmpRunEl, -1));
+        cmpNextEl.addEventListener("click", () => stepRun(cmpRunEl, +1));
 
         $("reload").addEventListener("click", async () => {
           try {
