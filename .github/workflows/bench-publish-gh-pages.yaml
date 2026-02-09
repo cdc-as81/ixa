@@ -4,7 +4,7 @@ on:
   workflow_run:
     workflows: ["Benchmark Pull Requests"]
     types: [completed]
-  workflow_dispatch: # just for now, for debug    
+  workflow_dispatch: # just for now, for debug
 
 concurrency:
   group: gh-pages-bench-publish

@@ -31,7 +31,9 @@ jobs:
         run: git checkout ${{ github.event.pull_request.head.ref }}
 
       - name: Run hyperfine benchmarks
-        run: mise run bench:hyperfine -- -- --export-markdown hyperfine.md --export-json hyperfine.json
+        run:
+          mise run bench:hyperfine -- -- --export-markdown hyperfine.md
+          --export-json hyperfine.json
 
       - name: Run criterion benchmarks (baseline compare)
         run: |
@@ -93,7 +95,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.ref_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          RUN_BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
+          RUN_BRANCH:
+            ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           set -euo pipefail
           node scripts/bench_results.js \
@@ -144,7 +147,9 @@ jobs:
             bench-history.json
 
       - name: Publish bench-history.json to gh-pages
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        if:
+          ${{ github.event_name != 'pull_request' ||
+          github.event.pull_request.head.repo.full_name == github.repository }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
