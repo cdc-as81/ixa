@@ -88,7 +88,7 @@ jobs:
             echo "No bench-history.json found on gh-pages (first run?)."
           fi
 
-      - name: Create JSON results artifacts (current + history)
+      - name: Create JSON results
         env:
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
@@ -111,40 +111,40 @@ jobs:
             --out-current bench-current.json \
             --history-out bench-history.json
 
-      - name: Print JSON results (bench-current.json + bench-history.json)
-        run: |
-          set -euo pipefail
-          echo "bench-current.json (bytes): $(wc -c < bench-current.json)"
-          echo "--- bench-current.json ---"
-          # Pretty-print for readability in logs; falls back to raw if python isn't present.
-          (python3 -m json.tool bench-current.json) || cat bench-current.json
-          echo "--- end bench-current.json ---"
-          echo "bench-history.json (bytes): $(wc -c < bench-history.json)"
-          echo "--- bench-history.json ---"
-          (python3 -m json.tool bench-history.json) || cat bench-history.json
-          echo "--- end bench-history.json ---"
+      # - name: Print JSON results (bench-current.json + bench-history.json)
+      #   run: |
+      #     set -euo pipefail
+      #     echo "bench-current.json (bytes): $(wc -c < bench-current.json)"
+      #     echo "--- bench-current.json ---"
+      #     # Pretty-print for readability in logs; falls back to raw if python isn't present.
+      #     (python3 -m json.tool bench-current.json) || cat bench-current.json
+      #     echo "--- end bench-current.json ---"
+      #     echo "bench-history.json (bytes): $(wc -c < bench-history.json)"
+      #     echo "--- bench-history.json ---"
+      #     (python3 -m json.tool bench-history.json) || cat bench-history.json
+      #     echo "--- end bench-history.json ---"
 
-      - name: Upload JSON results artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-current
-          if-no-files-found: error
-          path: |
-            bench-current.json
-            bench-history.json
-            results.md
-            hyperfine.md
-            hyperfine.json
-            criterion-regressions.txt
-            criterion-compare.txt
+      # - name: Upload JSON results artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: bench-current
+      #     if-no-files-found: error
+      #     path: |
+      #       bench-current.json
+      #       bench-history.json
+      #       results.md
+      #       hyperfine.md
+      #       hyperfine.json
+      #       criterion-regressions.txt
+      #       criterion-compare.txt
 
-      - name: Upload bench history artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bench-history
-          if-no-files-found: error
-          path: |
-            bench-history.json
+      # - name: Upload bench history artifact
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: bench-history
+      #     if-no-files-found: error
+      #     path: |
+      #       bench-history.json
 
       - name: Publish bench-history.json to gh-pages
         if:
